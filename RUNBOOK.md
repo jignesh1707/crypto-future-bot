@@ -264,7 +264,40 @@ python backtest.py --csv historical_data/ETH-USD_yfinance_5min_59d.csv \
   --bricktype percent --brick 0.1 --steplinetype percent --stepline 0.8 --trail 2
 ```
 
-### Refresh historical data
+### Fetch more historical data (Delta Exchange)
+
+Sub-hourly data is exchange-cache limited (~60–90 days regardless of source).
+Use longer timeframes to get more depth:
+
+```bash
+# 5-min — max ~90 days
+python data_fetcher.py --source delta --instrument BTC --interval 5min  --days 90
+
+# 1-hour — ~1–2 years, good for strategy validation
+python data_fetcher.py --source delta --instrument BTC --interval 60min --days 730
+
+# 4-hour — ~2–3 years
+python data_fetcher.py --source delta --instrument BTC --interval 4h    --days 1095
+
+# Daily — ~4–5 years (since Delta launched 2019)
+python data_fetcher.py --source delta --instrument BTC --interval 1d    --days 1825
+```
+
+Then backtest with adjusted brick sizes for each timeframe:
+
+```bash
+# 1h data — brick 0.4%
+python backtest.py --csv historical_data/BTC_delta_60min_730d.csv \
+  --bricktype percent --brick 0.4 --steplinetype points --stepline 300 --trail 2
+
+# 4h data — brick 0.7%
+python backtest.py --csv historical_data/BTC_delta_4h_1095d.csv \
+  --bricktype percent --brick 0.7 --steplinetype points --stepline 300 --trail 2
+```
+
+> Brick sizes for 1h/4h are starting points — re-optimise using the backtest results.
+
+### Refresh yfinance 5-min data
 
 ```bash
 python data_fetcher.py --source yfinance --instrument BTC-USD --interval 5min --days 59

@@ -118,7 +118,18 @@ class YFinanceFetcher:
         return candles
 
 
-# ── Delta (global, public, no auth) ───────────────────────────
+# ── Delta Exchange (global, public, no auth) ──────────────────
+#
+#  Practical data depth by interval:
+#    5min  → ~60–90 days    (sub-hourly cache limited by exchange)
+#    60min → ~1–2 years
+#    4h    → ~2–3 years
+#    1d    → ~4–5 years     (Delta launched 2019)
+#
+#  Recommended brick sizes when switching timeframe:
+#    5min  → brick 0.1%     (current backtested params)
+#    60min → brick 0.3–0.5%
+#    4h    → brick 0.5–1.0%
 
 class DeltaFetcher:
 
@@ -128,10 +139,19 @@ class DeltaFetcher:
         "1d": "1d", "1w": "1w"
     }
 
-    SYMBOLS = {
-        "BTC": "BTCUSD",
-        "ETH": "ETHUSD",
-        "SOL": "SOLUSD",
+    # Realistic max days per interval — request more and the API
+    # silently returns whatever it has, so no hard cap needed here.
+    SUGGESTED_MAX_DAYS = {
+        "1m": 7, "5m": 90, "15m": 180, "30m": 365,
+        "1h": 730, "4h": 1095, "1d": 1825, "1w": 9999,
+    }
+
+    # Try USDT-margined first (more liquid on Delta India),
+    # fall back to inverse (USD-margined) if no data returned.
+    SYMBOL_CANDIDATES = {
+        "BTC": ["BTCUSDT", "BTCUSD"],
+        "ETH": ["ETHUSDT", "ETHUSD"],
+        "SOL": ["SOLUSDT", "SOLUSD"],
     }
 
     def fetch(self, instrument: str, interval: str, days: int):
@@ -145,30 +165,63 @@ class DeltaFetcher:
             raise ValueError(f"Unsupported interval '{interval}'. "
                              f"Choose: {list(self.INTERVAL_MAP.keys())}")
 
-        symbol   = self.SYMBOLS.get(instrument.upper(),
-                                    f"{instrument.upper()}USD")
+        suggested = self.SUGGESTED_MAX_DAYS.get(resolution, 90)
+        if days > suggested:
+            log.warning(f"Requested {days}d for {interval} — Delta typically "
+                        f"provides ~{suggested}d at this resolution. "
+                        f"Fetching anyway; actual depth depends on the exchange.")
+
+        candidates = self.SYMBOL_CANDIDATES.get(
+            instrument.upper(),
+            [f"{instrument.upper()}USDT", f"{instrument.upper()}USD"]
+        )
         base_url = "https://api.delta.exchange/v2/history/candles"
 
-        end_ts        = int(datetime.now().timestamp())
-        start_ts      = int((datetime.now() - timedelta(days=days)).timestamp())
-        secs          = {"1m":60,"5m":300,"15m":900,"30m":1800,
-                         "1h":3600,"4h":14400,"1d":86400,"1w":604800}
-        chunk_secs    = 500 * secs.get(resolution, 300)
-        cursor        = start_ts
-        all_candles   = []
+        secs       = {"1m":60,"5m":300,"15m":900,"30m":1800,
+                      "1h":3600,"4h":14400,"1d":86400,"1w":604800}
+        chunk_secs = 500 * secs.get(resolution, 300)
+
+        # Auto-detect working symbol
+        symbol = None
+        for candidate in candidates:
+            test_end   = int(datetime.now().timestamp())
+            test_start = test_end - chunk_secs
+            try:
+                r = requests.get(base_url, params={
+                    "resolution": resolution, "symbol": candidate,
+                    "start": test_start, "end": test_end,
+                }, timeout=15)
+                d = r.json()
+                if d.get("success") and d.get("result"):
+                    symbol = candidate
+                    log.info(f"Delta symbol resolved: {symbol}")
+                    break
+            except Exception:
+                continue
+
+        if not symbol:
+            raise ValueError(
+                f"No working symbol found for {instrument} on Delta "
+                f"(tried: {candidates}). Check instrument name."
+            )
+
+        end_ts      = int(datetime.now().timestamp())
+        start_ts    = int((datetime.now() - timedelta(days=days)).timestamp())
+        cursor      = start_ts
+        all_candles = []
 
         while cursor < end_ts:
             chunk_end = min(cursor + chunk_secs, end_ts)
-            params = {
-                "resolution": resolution,
-                "symbol":     symbol,
-                "start":      cursor,
-                "end":        chunk_end,
-            }
-            log.info(f"  Delta {datetime.fromtimestamp(cursor).strftime('%Y-%m-%d')} "
+            log.info(f"  Delta [{symbol}] "
+                     f"{datetime.fromtimestamp(cursor).strftime('%Y-%m-%d')} "
                      f"-> {datetime.fromtimestamp(chunk_end).strftime('%Y-%m-%d')} ...")
             try:
-                resp = requests.get(base_url, params=params, timeout=15)
+                resp = requests.get(base_url, params={
+                    "resolution": resolution,
+                    "symbol":     symbol,
+                    "start":      cursor,
+                    "end":        chunk_end,
+                }, timeout=15)
                 resp.raise_for_status()
                 data = resp.json()
                 if data.get("success") and data.get("result"):
@@ -196,23 +249,39 @@ class DeltaFetcher:
                 seen.add(c.dt)
                 unique.append(c)
 
-        log.info(f"Delta: {len(unique)} candles for {instrument}")
+        log.info(f"Delta: {len(unique)} candles for {instrument} "
+                 f"({interval}, {days}d requested)")
         return unique
 
 
 # ── CLI ───────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="Download historical data")
+    p = argparse.ArgumentParser(
+        description="Download historical OHLCV data",
+        epilog="""
+Examples — Delta Exchange (deeper history):
+  5-min  ~90 days  : python data_fetcher.py --source delta --instrument BTC --interval 5min  --days 90
+  1-hour ~2 years  : python data_fetcher.py --source delta --instrument BTC --interval 60min --days 730
+  4-hour ~3 years  : python data_fetcher.py --source delta --instrument BTC --interval 4h    --days 1095
+  Daily  ~5 years  : python data_fetcher.py --source delta --instrument BTC --interval 1d    --days 1825
+
+Suggested brick sizes per timeframe:
+  5min  → --brick 0.1  (backtested)
+  60min → --brick 0.4
+  4h    → --brick 0.7
+  1d    → --brick 1.0
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p.add_argument("--source",     required=True,
                    help="yfinance | delta")
     p.add_argument("--instrument", required=True,
-                   help="BTC-USD | ETH-USD | SOL-USD (yfinance) "
-                        "or BTC | ETH | SOL (delta)")
+                   help="BTC-USD | ETH-USD | SOL-USD (yfinance)  or  BTC | ETH | SOL (delta)")
     p.add_argument("--interval",   default="5min",
-                   help="1min | 5min | 15min | 1d (default: 5min)")
+                   help="1min | 5min | 15min | 30min | 60min | 4h | 1d | 1w  (default: 5min)")
     p.add_argument("--days",       type=int, default=59,
-                   help="Days of history (default: 59)")
+                   help="Days of history to fetch (default: 59)")
     args = p.parse_args()
 
     fetchers = {"yfinance": YFinanceFetcher, "delta": DeltaFetcher}
@@ -226,14 +295,20 @@ if __name__ == "__main__":
         if not candles:
             print("No candles returned.")
             exit(1)
-        fname = f"{args.instrument}_{args.source}_{args.interval}_{args.days}d.csv"
-        path  = save_csv(candles, fname)
+        fname  = f"{args.instrument}_{args.source}_{args.interval}_{args.days}d.csv"
+        path   = save_csv(candles, fname)
         prices = [c.close for c in candles]
         log.info(f"Range: {min(prices):.2f} - {max(prices):.2f}  "
                  f"First: {candles[0].dt}  Last: {candles[-1].dt}")
-        print(f"\nReady for backtest:")
+
+        # Suggest brick size based on interval
+        brick_hints = {
+            "5min": "0.1", "60min": "0.4", "4h": "0.7", "1d": "1.0"
+        }
+        brick = brick_hints.get(args.interval, "0.1")
+        print(f"\nReady for backtest (suggested brick for {args.interval}):")
         print(f"  python backtest.py --csv {path} "
-              f"--bricktype percent --brick 0.1 "
+              f"--bricktype percent --brick {brick} "
               f"--steplinetype points --stepline 300 --trail 2")
     except Exception as e:
         log.error(f"Failed: {e}")
