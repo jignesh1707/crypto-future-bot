@@ -346,14 +346,35 @@ tail -20 renko_bot.log
 
 All in `config.py` under `SYMBOL_CONFIGS`.
 
-| Parameter | What it controls | Conservative | Aggressive |
-|---|---|---|---|
-| `delta_size` | Position size | 0.001 BTC | 0.005 BTC |
-| `max_daily_loss` | Bot stops if unrealized loss hits this (USD) | 20 | 100 |
-| `max_trades_per_day` | Cap on signals per day | 4 | 8 |
-| `trail_bricks` | SL distance from trend high/low | 3 | 1 |
-| `chop_cooldown` | Bricks between flips before signal allowed | 5 | 2 |
-| `min_bricks` | Minimum trend bricks before entry | 3 | 1 |
+| Parameter | What it controls | Default | Conservative | Aggressive |
+|---|---|---|---|---|
+| `delta_size` | Position size | 0.001 BTC | 0.001 BTC | 0.005 BTC |
+| `max_daily_loss` | Bot stops if unrealized loss exceeds this (USD) | 50 | 20 | 100 |
+| `max_trades_per_day` | Cap on signals per day | 6 | 4 | 8 |
+| `trail_bricks` | Initial SL distance (bricks from stepline high/low) | 2 | 3 | 1 |
+| `break_even_bricks` | Bricks in profit before SL snaps to entry (`0` = off) | 3 | 2 | 4 |
+| `trail_bricks_after_be` | Trail tightness once break-even has fired | 1 | 1 | 1 |
+| `chop_cooldown` | Bricks between flips before signal allowed | 3 | 5 | 2 |
+| `min_bricks` | Minimum trend bricks before entry | 2 | 3 | 1 |
+
+**Break-even flow:**
+1. Trade opens → SL at `trail_bricks` (default 2) behind stepline high/low
+2. Price moves `break_even_bricks` (default 3) ahead of entry → SL snaps to entry price
+3. From that point on, trail tightens to `trail_bricks_after_be` (default 1)
+4. Set `break_even_bricks = 0` to disable break-even entirely
+
+**Backtest with break-even:**
+```bash
+# Default (BE@3, tight trail 1 brick)
+python backtest.py --csv historical_data/BTC-USD_yfinance_5min_59d.csv \
+  --bricktype percent --brick 0.1 --steplinetype points --stepline 300 \
+  --trail 2 --breakeven 3 --trailafter 1
+
+# Disable break-even (original behaviour)
+python backtest.py --csv historical_data/BTC-USD_yfinance_5min_59d.csv \
+  --bricktype percent --brick 0.1 --steplinetype points --stepline 300 \
+  --trail 2 --breakeven 0
+```
 
 > **Start conservative.** Tighten only after the bot has run cleanly for 2+ weeks live.
 

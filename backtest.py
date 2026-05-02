@@ -57,7 +57,8 @@ def load_csv(csv_file: str):
 
 def run_backtest(csv_file, brick_type="percent", brick_value=0.1,
                  stepline_type="points", stepline_value=300.0,
-                 trail_bricks=2, min_bricks=2, chop_cd=3):
+                 trail_bricks=2, min_bricks=2, chop_cd=3,
+                 break_even_bricks=3, trail_bricks_after_be=1):
 
     import logging; logging.disable(logging.CRITICAL)
 
@@ -80,57 +81,76 @@ def run_backtest(csv_file, brick_type="percent", brick_value=0.1,
         signal = engine.update(price)
 
         if position:
-            new_sl = engine.trail_sl(position['direction'], trail_bricks)
+            # ── Break-even ──────────────────────────────────
+            if not position['be'] and break_even_bricks > 0:
+                bricks_profit = engine.bricks_from_price(
+                    position['entry'], position['direction'])
+                if bricks_profit >= break_even_bricks:
+                    be_sl = position['entry']
+                    if position['direction'] == Direction.UP:
+                        if be_sl > position['sl']: position['sl'] = be_sl
+                    else:
+                        if be_sl < position['sl']: position['sl'] = be_sl
+                    position['be'] = True
+
+            # ── Trailing SL ─────────────────────────────────
+            active_trail = (trail_bricks_after_be if position['be']
+                            else trail_bricks)
+            new_sl = engine.trail_sl(position['direction'], active_trail)
+
             if position['direction'] == Direction.UP:
                 if new_sl > position['sl']: position['sl'] = new_sl
                 if price <= position['sl']:
                     pnl = position['sl'] - position['entry']
-                    equity += pnl; peak = max(peak,equity)
-                    max_dd  = min(max_dd, equity-peak)
+                    equity += pnl; peak = max(peak, equity)
+                    max_dd  = min(max_dd, equity - peak)
                     trades.append({'num':len(trades)+1,'type':'SL',
                         'dir':'LONG','entry_dt':position['dt'],'exit_dt':dt,
                         'entry':position['entry'],'exit':position['sl'],
-                        'pnl':pnl,'equity':equity}); position=None
+                        'pnl':pnl,'equity':equity,'be':position['be']})
+                    position = None
             elif position['direction'] == Direction.DOWN:
                 if new_sl < position['sl']: position['sl'] = new_sl
                 if price >= position['sl']:
                     pnl = position['entry'] - position['sl']
-                    equity += pnl; peak = max(peak,equity)
-                    max_dd  = min(max_dd, equity-peak)
+                    equity += pnl; peak = max(peak, equity)
+                    max_dd  = min(max_dd, equity - peak)
                     trades.append({'num':len(trades)+1,'type':'SL',
                         'dir':'SHORT','entry_dt':position['dt'],'exit_dt':dt,
                         'entry':position['entry'],'exit':position['sl'],
-                        'pnl':pnl,'equity':equity}); position=None
+                        'pnl':pnl,'equity':equity,'be':position['be']})
+                    position = None
 
         if signal in (Signal.BUY, Signal.SELL):
             if position:
                 d   = position['direction']
-                pnl = (price-position['entry']) if d==Direction.UP \
-                       else (position['entry']-price)
-                equity += pnl; peak = max(peak,equity)
-                max_dd  = min(max_dd, equity-peak)
+                pnl = (price - position['entry']) if d == Direction.UP \
+                       else (position['entry'] - price)
+                equity += pnl; peak = max(peak, equity)
+                max_dd  = min(max_dd, equity - peak)
                 trades.append({'num':len(trades)+1,'type':'REV',
                     'dir':'LONG' if d==Direction.UP else 'SHORT',
                     'entry_dt':position['dt'],'exit_dt':dt,
                     'entry':position['entry'],'exit':price,
-                    'pnl':pnl,'equity':equity}); position=None
+                    'pnl':pnl,'equity':equity,'be':position['be']})
+                position = None
 
-            direction = Direction.UP if signal==Signal.BUY else Direction.DOWN
+            direction = Direction.UP if signal == Signal.BUY else Direction.DOWN
             sl = engine.trail_sl(direction, trail_bricks)
             position = {'direction':direction,'entry':price,'sl':sl,
-                        'bar':i,'dt':dt}
+                        'bar':i,'dt':dt,'be':False}
 
     if position:
         dt_last, p_last = rows[-1]
         d   = position['direction']
-        pnl = (p_last-position['entry']) if d==Direction.UP \
-               else (position['entry']-p_last)
+        pnl = (p_last - position['entry']) if d == Direction.UP \
+               else (position['entry'] - p_last)
         equity += pnl
         trades.append({'num':len(trades)+1,'type':'END',
             'dir':'LONG' if d==Direction.UP else 'SHORT',
             'entry_dt':position['dt'],'exit_dt':dt_last,
             'entry':position['entry'],'exit':p_last,
-            'pnl':pnl,'equity':equity})
+            'pnl':pnl,'equity':equity,'be':position['be']})
 
     # ── Stats ─────────────────────────────────────────────────
     wins    = [t for t in trades if t['pnl']>0]
@@ -142,12 +162,19 @@ def run_backtest(csv_file, brick_type="percent", brick_value=0.1,
     best    = max((t['pnl'] for t in trades), default=0)
     worst   = min((t['pnl'] for t in trades), default=0)
 
+    be_trades  = [t for t in trades if t.get('be')]
+    be_wins    = [t for t in be_trades if t['pnl'] > 0]
+
+    be_label = (f"BE@{break_even_bricks}bricks → trail{trail_bricks_after_be}"
+                if break_even_bricks > 0 else "BE=off")
+
     print("\n" + "="*58)
     print(f"  BACKTEST RESULTS")
     print(f"  Brick  : {brick_value} {brick_type}  "
           f"| Stepline: {stepline_value} {stepline_type}")
     print(f"  Trail  : {trail_bricks} bricks  "
-          f"| MinBricks: {min_bricks}  | Chop: {chop_cd}")
+          f"| {be_label}")
+    print(f"  MinBricks: {min_bricks}  | Chop: {chop_cd}")
     print(f"  CSV    : {os.path.basename(csv_file)}")
     print("="*58)
     print(f"  Bars processed  : {len(rows)}")
@@ -160,6 +187,9 @@ def run_backtest(csv_file, brick_type="percent", brick_value=0.1,
     print(f"  Worst trade     : {worst:+.4f} pts")
     print(f"  Max drawdown    : {max_dd:+.4f} pts")
     print(f"  Net equity      : {equity:+.4f} pts")
+    if break_even_bricks > 0:
+        print(f"  BE triggered    : {len(be_trades)} trades  "
+              f"({len(be_wins)}W / {len(be_trades)-len(be_wins)}L after BE)")
     print("="*58)
 
     print(f"\n  ALL TRADES ({len(trades)}):")
@@ -221,18 +251,25 @@ if __name__ == "__main__":
     p.add_argument("--bricktype",    default="percent")
     p.add_argument("--stepline",     type=float, default=300)
     p.add_argument("--steplinetype", default="points")
-    p.add_argument("--trail",        type=int,   default=2)
+    p.add_argument("--trail",        type=int,   default=2,
+                   help="Initial trail distance in bricks (default: 2)")
     p.add_argument("--minbricks",    type=int,   default=2)
     p.add_argument("--chop",         type=int,   default=3)
+    p.add_argument("--breakeven",    type=int,   default=3,
+                   help="Bricks in profit to trigger break-even (0=off, default: 3)")
+    p.add_argument("--trailafter",   type=int,   default=1,
+                   help="Trail bricks after break-even fires (default: 1)")
     args = p.parse_args()
 
     run_backtest(
-        csv_file       = args.csv,
-        brick_type     = args.bricktype,
-        brick_value    = args.brick,
-        stepline_type  = args.steplinetype,
-        stepline_value = args.stepline,
-        trail_bricks   = args.trail,
-        min_bricks     = args.minbricks,
-        chop_cd        = args.chop,
+        csv_file             = args.csv,
+        brick_type           = args.bricktype,
+        brick_value          = args.brick,
+        stepline_type        = args.steplinetype,
+        stepline_value       = args.stepline,
+        trail_bricks         = args.trail,
+        min_bricks           = args.minbricks,
+        chop_cd              = args.chop,
+        break_even_bricks    = args.breakeven,
+        trail_bricks_after_be= args.trailafter,
     )

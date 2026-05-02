@@ -96,6 +96,16 @@ class RenkoEngine:
         else:
             return self.state.stepline.low  + brick_size * trail_bricks
 
+    def bricks_from_price(self, ref_price: float, direction: Direction) -> int:
+        """Whole bricks price has moved from ref_price in the given direction."""
+        brick_size = self._brick_size(self.state.last_brick_close)
+        if brick_size <= 0:
+            return 0
+        moved = (self.state.last_brick_close - ref_price
+                 if direction == Direction.UP
+                 else ref_price - self.state.last_brick_close)
+        return max(0, int(moved / brick_size))
+
     def summary(self) -> dict:
         s = self.state
         threshold = (

@@ -52,11 +52,12 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class Position:
-    order_id:    str
-    direction:   Direction
-    entry_price: float
-    qty:         float
-    current_sl:  float
+    order_id:             str
+    direction:            Direction
+    entry_price:          float
+    qty:                  float
+    current_sl:           float
+    break_even_triggered: bool = False
 
 
 # ── Bot ───────────────────────────────────────────────────────
@@ -183,21 +184,46 @@ class RenkoBot:
                  f"trades_today={self.trades_today}/{C.max_trades_per_day}")
 
     def _trail_sl(self, ltp: float):
-        p      = self.position
-        new_sl = self.engine.trail_sl(p.direction, C.trail_bricks)
+        p = self.position
+
+        # ── Break-even ────────────────────────────────────────
+        if not p.break_even_triggered and C.break_even_bricks > 0:
+            bricks_profit = self.engine.bricks_from_price(p.entry_price, p.direction)
+            if bricks_profit >= C.break_even_bricks:
+                be_sl = p.entry_price
+                should_move = (
+                    (p.direction == Direction.UP   and be_sl > p.current_sl) or
+                    (p.direction == Direction.DOWN and be_sl < p.current_sl)
+                )
+                if should_move:
+                    new_id = self.broker.modify_sl(p.order_id, be_sl)
+                    if new_id:
+                        self.position.current_sl = be_sl
+                        self.position.order_id   = new_id
+                    log.info(f"Break-even  {bricks_profit} bricks profit  "
+                             f"SL -> entry {be_sl:.4f}")
+                p.break_even_triggered = True
+                log.info(f"Tight trail armed  "
+                         f"({C.trail_bricks} -> {C.trail_bricks_after_be} bricks)")
+
+        # ── Trailing SL ───────────────────────────────────────
+        active_trail = (C.trail_bricks_after_be if p.break_even_triggered
+                        else C.trail_bricks)
+        new_sl = self.engine.trail_sl(p.direction, active_trail)
 
         should_update = (
             (p.direction == Direction.UP   and new_sl > p.current_sl) or
             (p.direction == Direction.DOWN and new_sl < p.current_sl)
         )
         if should_update:
-            log.info(f"Trail SL  {p.current_sl:.4f} -> {new_sl:.4f}")
+            mode = "tight" if p.break_even_triggered else "normal"
+            log.info(f"Trail SL [{mode}]  {p.current_sl:.4f} -> {new_sl:.4f}")
             new_id = self.broker.modify_sl(p.order_id, new_sl)
             if new_id:
                 self.position.current_sl = new_sl
                 self.position.order_id   = new_id
 
-        # SL hit detection
+        # ── SL hit detection ──────────────────────────────────
         sl_hit = (
             (p.direction == Direction.UP   and ltp <= p.current_sl) or
             (p.direction == Direction.DOWN and ltp >= p.current_sl)
