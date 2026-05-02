@@ -9,8 +9,10 @@
 # ============================================================
 
 import time
+import signal
 import logging
 import logging.handlers
+import datetime
 from dataclasses import dataclass
 from typing      import Optional
 
@@ -78,8 +80,12 @@ class RenkoBot:
         self.broker       = None
         self.position:    Optional[Position] = None
         self.trades_today = 0
+        self._trade_date  = datetime.date.today()
 
     def run(self):
+        signal.signal(signal.SIGTERM, self._on_signal)
+        signal.signal(signal.SIGHUP,  self._on_signal)
+
         log.info("Connecting to Delta Exchange...")
         self.broker = get_broker(config)
 
@@ -101,7 +107,18 @@ class RenkoBot:
 
             time.sleep(C.check_interval_sec)
 
+    def _on_signal(self, signum, frame):
+        log.info(f"Signal {signum} received — closing position and shutting down")
+        self._close_position()
+        raise SystemExit(0)
+
     def _tick(self):
+        today = datetime.date.today()
+        if today != self._trade_date:
+            log.info(f"New trading day ({today}) — resetting trades counter")
+            self.trades_today = 0
+            self._trade_date  = today
+
         ltp     = self.broker.get_ltp(C.instrument)
         pos_str = (f"IN {self.position.direction.value} "
                    f"SL={self.position.current_sl:.4f}"
