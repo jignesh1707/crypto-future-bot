@@ -80,8 +80,7 @@ def run_backtest(csv_file, brick_type="percent", brick_value=0.1,
         signal = engine.update(price)
 
         if position:
-            new_sl = engine.trail_sl(position['entry'],
-                                     position['direction'], trail_bricks)
+            new_sl = engine.trail_sl(position['direction'], trail_bricks)
             if position['direction'] == Direction.UP:
                 if new_sl > position['sl']: position['sl'] = new_sl
                 if price <= position['sl']:
@@ -117,7 +116,7 @@ def run_backtest(csv_file, brick_type="percent", brick_value=0.1,
                     'pnl':pnl,'equity':equity}); position=None
 
             direction = Direction.UP if signal==Signal.BUY else Direction.DOWN
-            sl = engine.trail_sl(price, direction, trail_bricks)
+            sl = engine.trail_sl(direction, trail_bricks)
             position = {'direction':direction,'entry':price,'sl':sl,
                         'bar':i,'dt':dt}
 

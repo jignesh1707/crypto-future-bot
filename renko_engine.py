@@ -89,8 +89,7 @@ class RenkoEngine:
         self._build_bricks(price)
         return self._update_stepline(price)
 
-    def trail_sl(self, entry_price: float,
-                 direction: Direction, trail_bricks: int = 2) -> float:
+    def trail_sl(self, direction: Direction, trail_bricks: int = 2) -> float:
         brick_size = self._brick_size(self.state.last_brick_close)
         if direction == Direction.UP:
             return self.state.stepline.high - brick_size * trail_bricks
@@ -122,7 +121,8 @@ class RenkoEngine:
         return float(self.brick_value)
 
     def _build_bricks(self, price: float):
-        ref = self.state.last_brick_close
+        ref   = self.state.last_brick_close
+        count = 0
         while True:
             size = self._brick_size(ref)
             if price >= ref + size:
@@ -130,12 +130,18 @@ class RenkoEngine:
                     RenkoBrick(open=ref, close=ref+size, direction=Direction.UP))
                 ref += size
                 self.state.bricks_since_flip += 1
+                count += 1
             elif price <= ref - size:
                 self.state.bricks.append(
                     RenkoBrick(open=ref, close=ref-size, direction=Direction.DOWN))
                 ref -= size
                 self.state.bricks_since_flip += 1
+                count += 1
             else:
+                break
+            if count >= 500:
+                log.warning(f"_build_bricks: capped at 500 bricks "
+                            f"(price={price:.4f} ref={ref:.4f}) — large price gap?")
                 break
         self.state.last_brick_close = ref
 

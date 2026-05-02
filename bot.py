@@ -141,7 +141,7 @@ class RenkoBot:
 
     def _open_position(self, signal: Signal, ltp: float):
         direction  = Direction.UP if signal == Signal.BUY else Direction.DOWN
-        initial_sl = self.engine.trail_sl(ltp, direction, C.trail_bricks)
+        initial_sl = self.engine.trail_sl(direction, C.trail_bricks)
         size       = C.delta_size
 
         log.info(f"OPEN {direction.value} @ {ltp:.4f}  "
@@ -167,7 +167,7 @@ class RenkoBot:
 
     def _trail_sl(self, ltp: float):
         p      = self.position
-        new_sl = self.engine.trail_sl(p.entry_price, p.direction, C.trail_bricks)
+        new_sl = self.engine.trail_sl(p.direction, C.trail_bricks)
 
         should_update = (
             (p.direction == Direction.UP   and new_sl > p.current_sl) or

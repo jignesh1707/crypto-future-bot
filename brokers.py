@@ -141,7 +141,7 @@ class DeltaBroker:
         product_id = self._get_product_id(instrument)
         side       = "buy"  if direction == "BUY"  else "sell"
         sl_side    = "sell" if direction == "BUY"  else "buy"
-        size       = float(self.cfg.C.delta_size)
+        size       = float(qty)
 
         # Cache for modify_sl
         self._last_product_id = product_id
@@ -183,14 +183,27 @@ class DeltaBroker:
                 log.info(f"SL order OK  id={sl_id}  trigger={sl_price:.4f}")
                 return sl_id
             else:
-                log.warning(f"SL order issue: {sl_order} "
-                            f"— position open but NO stop loss!")
-                return entry_id
+                log.error(f"SL order response invalid: {sl_order} "
+                          f"— emergency closing entry position")
+                self._emergency_close(product_id, size, sl_side)
+                raise RuntimeError("SL placement failed — position emergency-closed")
         except Exception as e:
-            log.warning(f"SL order failed: {e} "
-                        f"— position open WITHOUT stop loss! "
-                        f"Close manually if needed.")
-            return entry_id
+            log.error(f"SL order failed: {e} — emergency closing entry position")
+            self._emergency_close(product_id, size, sl_side)
+            raise RuntimeError(f"SL placement failed — position emergency-closed: {e}")
+
+    def _emergency_close(self, product_id: int, size: float, side: str):
+        try:
+            self.client.place_order(
+                product_id  = product_id,
+                size        = size,
+                side        = side,
+                order_type  = "market_order",
+                reduce_only = True,
+            )
+            log.warning("Emergency close executed — position is now flat")
+        except Exception as e:
+            log.error(f"Emergency close ALSO failed: {e} — MANUAL INTERVENTION REQUIRED")
 
     # ── Modify SL ─────────────────────────────────────────────
 
@@ -242,7 +255,7 @@ class DeltaBroker:
         """Cancel SL order and close position with reduce-only market order."""
         product_id = self._get_product_id(instrument)
         close_side = "sell" if direction == "BUY" else "buy"
-        size       = float(self.cfg.C.delta_size)
+        size       = float(qty)
 
         # Cancel pending SL first
         try:
